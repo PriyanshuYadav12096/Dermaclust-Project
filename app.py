@@ -5,8 +5,9 @@ from PIL import Image
 import numpy as np
 import tensorflow as tf
 import cv2 
+from assessment_logic import calculate_hybrid_profile
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-
+from ingredients import KEY_INGREDIENTS
 # -----------------------------------------------------------------
 # INITIALIZE MEDIAPIPE
 # -----------------------------------------------------------------
@@ -136,29 +137,48 @@ def predict_zone_type(cnn_model, zone_image, label_map):
         return "uncertain", confidence
         
     return label_map.get(predicted_index, "Unknown"), confidence
+# scan the product list and highlight the hero ingedients.
+def get_hero_ingredients(ingredient_list, skin_type):
+    """
+    Identifies which ingredients in a product actually match 
+    the beneficial list for the detected skin type.
+    """
+    if skin_type not in KEY_INGREDIENTS:
+        return []
+        
+    beneficial_set = set(KEY_INGREDIENTS[skin_type])
+    # Find the intersection
+    matches = [ing for ing in ingredient_list if ing.strip().lower() in beneficial_set]
+    return matches[:3] # Return the top 3 matches for brevity
 
 def get_recommendations(product_df, skin_type):
-    if skin_type == "combination":
-        # Average Oily and Dry/Normal benefits for a balanced approach
-        product_df['temp_score'] = (product_df['score_oily'] + product_df['score_dry']) / 2
-        target_col = 'temp_score'
-    else:
-        target_col = f"score_{skin_type}"
-    
-    if target_col not in product_df.columns and target_col != 'temp_score':
+    target_col = f"score_{skin_type}"
+    if target_col not in product_df.columns:
         target_col = "score_normal" 
         
-    # Get products with a decent match
-    recommended = product_df[product_df[target_col] > 0.4].copy()
-    recommended = recommended.sort_values(by=target_col, ascending=False)
+    # Filter products that match the skin type (Score > 0.3)
+    matches = product_df[product_df[target_col] > 0.3].copy()
+    matches = matches.sort_values(by=target_col, ascending=False)
     
-    # Try to provide at least one of each core type for a routine
-    cleanser = recommended[recommended['product_type'].str.contains('Cleanser', case=False, na=False)].head(1)
-    moisturizer = recommended[recommended['product_type'].str.contains('Moisturizer', case=False, na=False)].head(1)
-    treatment = recommended[~recommended['product_type'].str.contains('Cleanser|Moisturizer', case=False, na=False)].head(1)
-    
-    return pd.concat([cleanser, treatment, moisturizer]).head(3)
+    # Helper to find specific product categories
+    def find_best(category_keywords):
+        pattern = '|'.join(category_keywords)
+        return matches[matches['product_type'].str.contains(pattern, case=False, na=False)].head(1)
 
+    # Build the routine slots
+    routine = {
+        "AM": {
+            "Step 1: Cleanse": find_best(['Cleanser', 'Wash']),
+            "Step 2: Treat": find_best(['Serum', 'Toner', 'Essence']),
+            "Step 3: Protect": find_best(['SPF', 'Sunscreen', 'Day Cream', 'Moisturizer'])
+        },
+        "PM": {
+            "Step 1: Cleanse": find_best(['Cleanser', 'Wash', 'Oil']),
+            "Step 2: Treat": find_best(['Serum', 'Treatment', 'Night']),
+            "Step 3: Hydrate": find_best(['Moisturizer', 'Cream', 'Night Cream'])
+        }
+    }
+    return routine
 # -----------------------------------------------------------------
 # MAIN INTERFACE
 # -----------------------------------------------------------------
@@ -178,7 +198,27 @@ def main():
     with tab2:
         camera = st.camera_input("Take selfie")
         if camera: img_input = Image.open(camera)
-
+    # --- NEW: Clinical Questionnaire Section ---
+    st.divider()
+    st.subheader("📋 Clinical Verification")
+    st.info("The AI is analyzing your photo, but your input helps reach 100% accuracy.")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        q_feel = st.selectbox(
+            "How does your skin feel 1 hour after washing?", 
+            ["Normal", "Tight/Itchy", "Greasy/Shiny", "Oil only in T-Zone"]
+        )
+    with col2:
+        q_breakouts = st.selectbox(
+            "How often do you experience breakouts?", 
+            ["Rarely", "Occasionally", "Frequent"]
+        )
+    
+    user_quiz = {
+        'feel_after_wash': q_feel, 
+        'breakouts': q_breakouts
+    }
     if img_input:
         is_valid, msg, boxed_img, face_crop = process_and_validate_image(img_input)
         st.image(boxed_img, caption="Face Detection Status", width=450)
@@ -204,11 +244,26 @@ def main():
                 if fh == "oily" and lc == "dry":
                     final_type = "combination"
                 else:
-                    final_type, confidence, probs = predict_skin_type(cnn_model, face_crop, CNN_LABEL_MAP)
+    # Get raw AI predictions
+                   _, confidence, probs = predict_skin_type(cnn_model, face_crop, CNN_LABEL_MAP)
+    
+    # Convert AI array to a dictionary for the hybrid logic
+                ai_results = dict(zip(CNN_LABEL_MAP.values(), probs))
+    
+    # NEW: Merge AI results with User Quiz
+                final_type, combined_weights = calculate_hybrid_profile(ai_results, user_quiz)
+    
+                st.write("### 📊 Hybrid Confidence (AI + Clinical)")
+                chart_data = pd.DataFrame(
+                     combined_weights.values(), 
+                     index=combined_weights.keys(), 
+                     columns=["Weighted Score"]
+                       )
+                st.bar_chart(chart_data)
                     # DEBUG CHART: Shows raw AI probability for each type
-                    st.write("### 📊 AI Confidence Breakdown")
-                    chart_data = pd.DataFrame(probs, index=CNN_LABEL_MAP.values(), columns=["Confidence"])
-                    st.bar_chart(chart_data)
+                st.write("### 📊 AI Confidence Breakdown")
+                chart_data = pd.DataFrame(probs, index=CNN_LABEL_MAP.values(), columns=["Confidence"])
+                st.bar_chart(chart_data)
 
             # 2. RECOMMENDATIONS
             if final_type != "uncertain":
@@ -219,13 +274,74 @@ def main():
                 results = get_recommendations(df, final_type)
                 
                 st.subheader(f"🧴 Top Recommendations for {final_type.capitalize()} Skin")
-                if not results.empty:
-                    for _, row in results.iterrows():
-                        with st.expander(f"⭐ {row['product_name']}"):
-                            st.write(f"**Type:** {row['product_type']} | **Price:** ${row['product_price']}")
-                            st.caption(f"Ingredients: {row['clean_ingreds']}")
-                else:
-                    st.info("No matching products found in database.")
+                # app.py (Replace the recommendation display block)
+
+            if final_type != "uncertain":
+                st.metric("Detected Profile", final_type.capitalize())
+                st.divider()
+                
+                routine = get_recommendations(df, final_type)
+                
+                st.subheader(f"✨ Recommended {final_type.capitalize()} Regimen")
+                
+                # Create two columns for AM and PM
+                col_am, col_pm = st.columns(2)
+                
+                # app.py (Update the loop inside the AM and PM columns)
+
+# --- Updated AM Display ---
+                with col_am:
+                    st.markdown("#### ☀️ Morning (AM)")
+                    for step, prod_df in routine["AM"].items():
+                        if not prod_df.empty:
+                            row = prod_df.iloc[0]
+                            with st.expander(f"{step}: {row['product_name']}"):
+                                st.caption(f"**Type:** {row['product_type']}")
+                                
+                                # NEW: Explainability Feature
+                                # Assuming 'clean_ingreds' is stored as a list or string of a list
+                                ing_list = row['clean_ingreds']
+                                if isinstance(ing_list, str):
+                                    import ast
+                                    ing_list = ast.literal_eval(ing_list)
+                                
+                                heroes = get_hero_ingredients(ing_list, final_type)
+                                
+                                if heroes:
+                                    st.success(f"**Why it works:** Contains **{', '.join(heroes)}**, which are excellent for {final_type} skin.")
+                                else:
+                                    st.write(f"Matched based on overall {final_type} compatibility score.")
+                        else:
+                            st.write(f"*{step}: No match found.*")
+
+                # --- Updated PM Display (Do the same for PM) ---
+                with col_pm:
+                    st.markdown("#### 🌙 Evening (PM)")
+                    for step, prod_df in routine["PM"].items():
+                        if not prod_df.empty:
+                            row = prod_df.iloc[0]
+                            with st.expander(f"{step}: {row['product_name']}"):
+                                st.caption(f"**Type:** {row['product_type']}")
+                                
+                                # Explainability Feature
+                                ing_list = row['clean_ingreds']
+                                if isinstance(ing_list, str):
+                                    import ast
+                                    ing_list = ast.literal_eval(ing_list)
+                                
+                                heroes = get_hero_ingredients(ing_list, final_type)
+                                
+                                if heroes:
+                                    st.success(f"**Why it works:** Contains **{', '.join(heroes)}**.")
+                                else:
+                                    st.write("Matches your profile's safety and efficacy requirements.")
+                        else:
+                            st.write(f"*{step}: No match found.*")
+
+
+
+
+                    
 
 if __name__ == "__main__":
     main()

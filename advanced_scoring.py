@@ -2,26 +2,33 @@ import pandas as pd
 import ast
 from ingredients import KEY_INGREDIENTS, COMEDOGENIC_REAGENTS, POTENTIAL_IRRITANTS
 
+# advanced_scoring.py (Updated Version)
+
 def calculate_scientific_score(ingredient_list, skin_type):
     score = 0.0
-    ing_set = set([i.strip().lower() for i in ingredient_list])
+    # Do NOT use a set() here because order matters for concentration!
+    ingredients = [i.strip().lower() for i in ingredient_list]
     
-    # 1. POSITIVE MATCHES (+2 for 'best', +1 for 'good')
-    # (Note: You can refine your ingredients.py to have 'best' vs 'good' categories)
-    for match in ing_set:
-        if match in KEY_INGREDIENTS.get(skin_type, []):
-            score += 1.5  # Heavy weight for known beneficial ingredients
+    for index, ingredient in enumerate(ingredients):
+        # Weighting factor: Earlier ingredients have much higher impact.
+        # This formula gives the 1st ingredient a 1.0 multiplier, 
+        # and it decays as you go down the list.
+        weight = 1.0 / (index + 1)
+        
+        # 1. POSITIVE MATCHES (Multiplied by concentration weight)
+        if ingredient in KEY_INGREDIENTS.get(skin_type, []):
+            score += (2.0 * weight) # High score for active ingredients at the top
             
-    # 2. NEGATIVE FILTERS (The "Winner" Logic)
-    if skin_type in ['acne', 'oily']:
-        for bad in COMEDOGENIC_REAGENTS:
-            if bad in ing_set:
-                score -= 2.0  # Penalize heavily for clogging pores
+        # 2. NEGATIVE FILTERS (Heavy penalties if in top 5)
+        if skin_type in ['acne', 'oily']:
+            if ingredient in COMEDOGENIC_REAGENTS:
+                # If a pore-clogger is the 1st ingredient, penalty is -5.0
+                # If it's the 10th, penalty is -0.5
+                score -= (5.0 * weight) 
                 
-    if skin_type == 'dry':
-        for irritant in POTENTIAL_IRRITANTS:
-            if irritant in ing_set:
-                score -= 1.5  # Penalize for drying alcohols/fragrance
+        if skin_type == 'dry':
+            if ingredient in POTENTIAL_IRRITANTS:
+                score -= (4.0 * weight)
                 
     return max(0, score) # Ensure score doesn't go below 0
 
