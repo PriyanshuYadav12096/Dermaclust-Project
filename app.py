@@ -32,16 +32,32 @@ CNN_LABEL_MAP = {
 # -----------------------------------------------------------------
 # LOADING ASSETS
 # -----------------------------------------------------------------
+# @st.cache_resource
+# def load_models_and_assets():
+#     try:
+#         cnn_model = tf.keras.models.load_model('models/cnn_model.h5')
+#         df = pd.read_csv("products_with_scores.csv")
+#         return cnn_model, df
+#     except Exception as e:
+#         st.error(f"Error loading assets: {e}")
+#         return None, None
 @st.cache_resource
 def load_models_and_assets():
     try:
         cnn_model = tf.keras.models.load_model('models/cnn_model.h5')
         df = pd.read_csv("products_with_scores.csv")
-        return cnn_model, df
+        
+        # NEW: Load the dynamic label map from training
+        import json
+        with open('assets/label_map.json', 'r') as f:
+            raw_map = json.load(f)
+            # Convert keys back to integers
+            label_map = {int(k): v for k, v in raw_map.items()}
+            
+        return cnn_model, df, label_map
     except Exception as e:
         st.error(f"Error loading assets: {e}")
-        return None, None
-
+        return None, None, None
 # -----------------------------------------------------------------
 # IMAGE PROCESSING FUNCTIONS
 # -----------------------------------------------------------------

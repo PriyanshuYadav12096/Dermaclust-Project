@@ -15,8 +15,8 @@ from sklearn.preprocessing import MultiLabelBinarizer
 # from tensorflow.keras.models import Model (keep if you need, but Transformer model is different)
 
 # --- ADD NEW TRANSFORMER IMPORTS ---
-from transformers import DistilBertTokenizer, TFDistilBertForSequenceClassification
-from tensorflow.keras.optimizers import Adam
+# from transformers import DistilBertTokenizer, TFDistilBertForSequenceClassification
+# from tensorflow.keras.optimizers import Adam
 
 # --- Keep your CNN imports ---
 from tensorflow.keras.preprocessing.image import ImageDataGenerator
@@ -25,6 +25,7 @@ from tensorflow.keras.layers import Input, Dense, Flatten, GlobalAveragePooling2
 from tensorflow.keras.callbacks import EarlyStopping
 from tensorflow.keras.applications import MobileNetV2
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
+from tensorflow.keras.optimizers import Adam
 
 print("--- Starting Model Training Process (with Transformer) ---")
 # --- STEP 1: LOAD AND PREPARE TEXT DATA ---
@@ -56,71 +57,72 @@ except FileNotFoundError:
     exit()
 
 # --- STEP 2: TOKENIZE TEXT AND TRAIN TRANSFORMER MODEL ---
-print("\nStep 2/5: Building and fine-tuning the ingredients (DistilBERT) model...")
+# print("\nStep 2/5: Building and fine-tuning the ingredients (DistilBERT) model...")
 
-# 1. Load Pre-trained Tokenizer
-tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
+# # 1. Load Pre-trained Tokenizer
+# tokenizer = DistilBertTokenizer.from_pretrained('distilbert-base-uncased')
 
-# 2. Tokenize Your Data
-# This is different from Keras. It creates 'input_ids' and 'attention_mask'
-X = tokenizer(
-    df['ingredients_text'].tolist(),
-    add_special_tokens=True,
-    max_length=128,  # You can tune this
-    padding='max_length',
-    truncation=True,
-    return_tensors='tf'
-)
+# # 2. Tokenize Your Data
+# # This is different from Keras. It creates 'input_ids' and 'attention_mask'
+# X = tokenizer(
+#     df['ingredients_text'].tolist(),
+#     add_special_tokens=True,
+#     max_length=128,  # You can tune this
+#     padding='max_length',
+#     truncation=True,
+#     return_tensors='tf'
+# )
 
-# 3. Binarize Labels (Same as before)
-mlb = MultiLabelBinarizer()
-y = mlb.fit_transform(df['label_tags'])
-# We need to save the mlb classes, not the 'labels' list
-# The order might be different!
-labels_list_from_mlb = mlb.classes_
+# # 3. Binarize Labels (Same as before)
+# mlb = MultiLabelBinarizer()
+# y = mlb.fit_transform(df['label_tags'])
+# # We need to save the mlb classes, not the 'labels' list
+# # The order might be different!
+# labels_list_from_mlb = mlb.classes_
 
-# 4. Create Train/Validation Split
-# 4. Create Train/Validation Split
-# Convert TF Tensors to NumPy arrays for scikit-learn
-input_ids_np = X['input_ids'].numpy()
-attention_mask_np = X['attention_mask'].numpy()
+# # 4. Create Train/Validation Split
+# # 4. Create Train/Validation Split
+# # Convert TF Tensors to NumPy arrays for scikit-learn
+# input_ids_np = X['input_ids'].numpy()
+# attention_mask_np = X['attention_mask'].numpy()
 
-# Now, split the NumPy arrays
-X_train_ids, X_val_ids, y_train, y_val = train_test_split(input_ids_np, y, test_size=0.2, random_state=42)
-X_train_mask, X_val_mask, _, _ = train_test_split(attention_mask_np, y, test_size=0.2, random_state=42)
-# We need to split both input_ids and attention_mask
-# X_train_ids, X_val_ids, y_train, y_val = train_test_split(X['input_ids'], y, test_size=0.2, random_state=42)
-# X_train_mask, X_val_mask, _, _ = train_test_split(X['attention_mask'], y, test_size=0.2, random_state=42)
+# # Now, split the NumPy arrays
+# X_train_ids, X_val_ids, y_train, y_val = train_test_split(input_ids_np, y, test_size=0.2, random_state=42)
+# X_train_mask, X_val_mask, _, _ = train_test_split(attention_mask_np, y, test_size=0.2, random_state=42)
+# # We need to split both input_ids and attention_mask
+# # X_train_ids, X_val_ids, y_train, y_val = train_test_split(X['input_ids'], y, test_size=0.2, random_state=42)
+# # X_train_mask, X_val_mask, _, _ = train_test_split(X['attention_mask'], y, test_size=0.2, random_state=42)
 
-# Create TF-friendly dictionaries for training and validation data
-X_train = {'input_ids': X_train_ids, 'attention_mask': X_train_mask}
-X_val = {'input_ids': X_val_ids, 'attention_mask': X_val_mask}
+# # Create TF-friendly dictionaries for training and validation data
+# X_train = {'input_ids': X_train_ids, 'attention_mask': X_train_mask}
+# X_val = {'input_ids': X_val_ids, 'attention_mask': X_val_mask}
 
-# 5. Load Pre-trained Model
-bert_model = TFDistilBertForSequenceClassification.from_pretrained(
-    'distilbert-base-uncased',
-    num_labels=len(labels_list_from_mlb),
-    problem_type="multi_label_classification" # <-- Crucial for multi-label
-)
+# # 5. Load Pre-trained Model
+# bert_model = TFDistilBertForSequenceClassification.from_pretrained(
+#     'distilbert-base-uncased',
+#     num_labels=len(labels_list_from_mlb),
+#     problem_type="multi_label_classification", # <-- Crucial for multi-label
+#     use_safetensors=False # Add this line
+# )
 
-# 6. Compile the Model for Fine-Tuning
-# We must use a lower learning rate for fine-tuning
-bert_model.compile(
-    optimizer=Adam(learning_rate=3e-5),
-    # Use BCEWithLogitsLoss because the model outputs raw logits
-    loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
-    metrics=['accuracy']
-)
+# # 6. Compile the Model for Fine-Tuning
+# # We must use a lower learning rate for fine-tuning
+# bert_model.compile(
+#     optimizer=Adam(learning_rate=3e-5),
+#     # Use BCEWithLogitsLoss because the model outputs raw logits
+#     loss=tf.keras.losses.BinaryCrossentropy(from_logits=True),
+#     metrics=['accuracy']
+# )
 
-# 7. Fine-Tune the Model
-print("--- Fine-tuning DistilBERT model... ---")
-bert_model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
-    epochs=4, # Transformers fine-tune very quickly
-    batch_size=16
-)
-print("Ingredients (DistilBERT) model fine-tuned successfully.")
+# # 7. Fine-Tune the Model
+# print("--- Fine-tuning DistilBERT model... ---")
+# bert_model.fit(
+#     X_train, y_train,
+#     validation_data=(X_val, y_val),
+#     epochs=4, # Transformers fine-tune very quickly
+#     batch_size=16
+# )
+# print("Ingredients (DistilBERT) model fine-tuned successfully.")
 
 # --- STEP 3: TRAIN SKIN ANALYZER (TRANSFER LEARNING) ---
 print("\nStep 3/5: Building and training skin image model with Transfer Learning...")
@@ -258,25 +260,34 @@ print("\nStep 4/5: Saving all models and assets...")
 os.makedirs('models', exist_ok=True)
 os.makedirs('assets', exist_ok=True)
 
-# 1. Save the Transformer Model (New Way)
-bert_model.save_pretrained('models/bert_model_hf')
-print("Hugging Face Transformer model saved to 'models/bert_model_hf'.")
+# # 1. Save the Transformer Model (New Way)
+# bert_model.save_pretrained('models/bert_model_hf')
+# print("Hugging Face Transformer model saved to 'models/bert_model_hf'.")
 
-# 2. Save the Transformer Tokenizer (New Way)
-tokenizer.save_pretrained('assets/tokenizer_hf')
-print("Hugging Face Tokenizer saved to 'assets/tokenizer_hf'.")
+# # 2. Save the Transformer Tokenizer (New Way)
+# tokenizer.save_pretrained('assets/tokenizer_hf')
+# print("Hugging Face Tokenizer saved to 'assets/tokenizer_hf'.")
 
 # 3. Save the CNN Model (Same as before)
-image_model.save('models/cnn_model.h5')
-print("CNN model saved to 'models/cnn_model.h5'.")
+# image_model.save('models/cnn_model.h5')
+# print("CNN model saved to 'models/cnn_model.h5'.")
+# 2. Save the CNN Class Indices (Crucial for App Accuracy)
+# This replaces the 'mlb' logic and maps the AI's numbers to skin types.
+import json
+class_indices = train_gen.class_indices
+# Reverse the map so it is {0: 'acne', 1: 'dry', ...}
+label_map = {v: k for k, v in class_indices.items()}
 
-# 4. Save the Label Binarizer (CRITICAL CHANGE)
-# We must save the MultiLabelBinarizer (mlb) because it knows the
-# exact order of the output labels.
-with open('assets/mlb.pkl', 'wb') as f:
-    pickle.dump(mlb, f)
-print("Label Binarizer (mlb) saved to 'assets/mlb.pkl'.")
-# (We don't need 'labels.pkl' anymore)
+with open('assets/label_map.json', 'w') as f:
+    json.dump(label_map, f)
+print("CNN Label Map saved to 'assets/label_map.json'.")
+# # 4. Save the Label Binarizer (CRITICAL CHANGE)
+# # We must save the MultiLabelBinarizer (mlb) because it knows the
+# # exact order of the output labels.
+# with open('assets/mlb.pkl', 'wb') as f:
+#     pickle.dump(mlb, f)
+# print("Label Binarizer (mlb) saved to 'assets/mlb.pkl'.")
+# # (We don't need 'labels.pkl' anymore)
 
 
 # --- STEP 5: FINISH ---
