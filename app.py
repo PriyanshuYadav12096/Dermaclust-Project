@@ -8,9 +8,10 @@ import cv2
 import ast
 import json
 import requests
+
 from assessment_logic import calculate_hybrid_profile
 from tensorflow.keras.applications.mobilenet_v2 import preprocess_input
-from ingredients import KEY_INGREDIENTS
+from ingredients import KEY_INGREDIENTS,WEATHER_BOOSTERS
 
 # -----------------------------------------------------------------
 # INITIALIZE MEDIAPIPE
@@ -43,29 +44,33 @@ def load_models_and_assets():
 
 # --- NEW: Weather Data Retrieval ---
 def get_weather(city):
-    """
-    Fetches real-time weather from OpenWeatherMap.
-    Note: You should get a free API key from openweathermap.org
-    """
-    API_KEY = "89f6e278761ffe7c3daf5075aebe6fa4" # Replace with your actual key
-    # base_url = "http://api.openweathermap.org/data/2.5/weather?id=="
-    base_url="https://api.openweathermap.org/data/2.5/weather?q=London,uk&APPID=89f6e278761ffe7c3daf5075aebe6fa4"
+    API_KEY = "89f6e278761ffe7c3daf5075aebe6fa4" 
+    base_url = "https://api.openweathermap.org/data/2.5/weather?"
+    
     try:
         complete_url = f"{base_url}q={city}&appid={API_KEY}&units=metric"
         response = requests.get(complete_url).json()
-        
-        if response["cod"] != "404":
+
+        if response.get("cod") == 200:
             main_data = response["main"]
-            weather_desc = response["weather"][0]["description"]
+            # Note: Standard free API might not return 'uvi'. 
+            # If missing, we estimate UV risk based on 'clouds' and 'temp' for the model.
+            clouds = response.get("clouds", {}).get("all", 0)
+            
+            # Simple heuristic: Clearer sky + higher temp = Higher UV risk
+            estimated_uv = max(0, 10 - (clouds / 10)) if main_data["temp"] > 20 else 2
+            
             return {
                 "temp": main_data["temp"],
                 "humidity": main_data["humidity"],
-                "description": weather_desc,
-                "city": response["name"]
+                "description": response["weather"][0]["description"],
+                "city": response["name"],
+                "uv_index": response.get("uvi", estimated_uv) 
             }
         return None
-    except:
+    except Exception as e:
         return None
+
 
 # -----------------------------------------------------------------
 # IMAGE PROCESSING FUNCTIONS
@@ -134,120 +139,70 @@ def get_hero_ingredients(ingredient_list, skin_type):
     beneficial_set = set(KEY_INGREDIENTS[skin_type])
     matches = [ing for ing in ingredient_list if ing.strip().lower() in beneficial_set]
     return matches[:3]
-def get_recommendations(product_df, skin_type, user_goal, weather_data=None):
-    target_col = f"score_{skin_type}"
-    if target_col not in product_df.columns:
-        target_col = "score_normal" 
-        
-    matches = product_df[product_df[target_col] > 0.3].copy()
+# import random # Add this to your imports
+
+def get_recommendations(product_df, ai_results, user_quiz, weather_data=None):
+    """
+    ai_results: Dictionary of all probabilities (e.g., {'oily': 0.6, 'wrinkles': 0.3...})
+    """
+    # 1. Identify Primary and Secondary Concerns from AI
+    sorted_concerns = sorted(ai_results.items(), key=lambda x: x[1], reverse=True)
+    primary_skin = sorted_concerns[0][0]
+    secondary_skin = sorted_concerns[1][0] if len(sorted_concerns) > 1 else None
     
-    # --- NEW: Weather-Aware Scoring Adjustments ---
+    # 2. Base Scoring for ALL products
+    # Instead of filtering first, we score everything based on the AI's full profile
+    matches = product_df.copy()
+    matches['final_score'] = 0.0
+    
+    for concern, weight in ai_results.items():
+        score_col = f"score_{concern}"
+        if score_col in matches.columns:
+            matches['final_score'] += matches[score_col] * weight
+
+    # 3. Apply Weather & Goal Boosts
     if weather_data:
-        humidity = weather_data['humidity']
-        temp = weather_data['temp']
+        humidity = weather_data.get('humidity', 50)
+        temp = weather_data.get('temp', 25)
         
-        def calculate_weather_boost(row):
+        def apply_boosts(row):
             boost = 0
-            ingreds = str(row['clean_ingreds']).lower()
-            p_type = str(row['product_type']).lower()
-            
-            # 1. High Humidity Fix: Penalize heavy creams for oily skin
-            if humidity > 70 and skin_type in ['oily', 'acne'] and 'cream' in p_type:
-                boost -= 0.5 
-            
-            # 2. Low Humidity (Dry Air): Boost Hyaluronic Acid & Ceramides
-            if humidity < 35:
-                if 'hyaluronic' in ingreds or 'ceramide' in ingreds:
-                    boost += 0.4
-                    
-            # 3. High Temp/UV: Boost Sunscreen and Antioxidants (Vit C)
-            if temp > 30:
-                if 'spf' in p_type or 'sunscreen' in p_type or 'vitamin c' in ingreds:
-                    boost += 0.5
-                    
+            ings = str(row['clean_ingreds']).lower()
+            # Climate Logic
+            if humidity < 35 and any(h in ings for h in WEATHER_BOOSTERS['humidity_low']): boost += 0.3
+            if humidity > 70 and any(h in ings for h in WEATHER_BOOSTERS['humidity_high']): boost += 0.2
+            if temp > 30 and any(h in ings for h in WEATHER_BOOSTERS['uv_high']): boost += 0.4
+            # Goal Logic
+            goal_map = {"Brightening": "pigmentation", "Acne Control": "acne", "Anti-Aging": "wrinkles"}
+            target_goal = goal_map.get(user_quiz.get('goal'))
+            if target_goal and any(g in ings for g in KEY_INGREDIENTS.get(target_goal, [])):
+                boost += 0.5
             return boost
 
-        matches['weather_boost'] = matches.apply(calculate_weather_boost, axis=1)
-        matches[target_col] = matches[target_col] + matches['weather_boost']
+        matches['final_score'] += matches.apply(apply_boosts, axis=1)
 
-    # --- Goal-Based Personalization (Keep your existing logic) ---
-    goal_keywords = {
-        "Acne Control": ["salicylic", "benzoyl", "tea tree", "zinc"],
-        "Brightening": ["vitamin c", "niacinamide", "glycolic", "kojic"],
-        "Anti-Aging": ["retinol", "peptides", "collagen", "adenosine"],
-        "Deep Hydration": ["hyaluronic", "glycerin", "ceramide", "squalane"]
-    }
+    # 4. Filter and SORT
+    matches = matches.sort_values(by='final_score', ascending=False)
     
-    if user_goal in goal_keywords:
-        keywords = goal_keywords[user_goal]
-        matches['goal_boost'] = matches.apply(lambda r: sum(0.3 for k in keywords if k in str(r['clean_ingreds']).lower()), axis=1)
-        matches[target_col] = matches[target_col] + matches.get('goal_boost', 0)
-
-    # Sort and return best products
-    matches = matches.sort_values(by=target_col, ascending=False)
-    
-    def find_best(category_keywords):
+    # 5. VARIETY SAMPLING (Pick from top 5 for each category to ensure uniqueness)
+    def find_best_unique(category_keywords):
         pattern = '|'.join(category_keywords)
-        return matches[matches['product_type'].str.contains(pattern, case=False, na=False)].head(1)
+        candidates = matches[matches['product_type'].str.contains(pattern, case=False, na=False)].head(5)
+        if candidates.empty: return pd.DataFrame()
+        return candidates.sample(1) # Pick ONE randomly from the TOP 5 matches
 
     return {
         "AM": {
-            "Step 1: Cleanse": find_best(['Cleanser', 'Wash']),
-            "Step 2: Treat": find_best(['Serum', 'Toner', 'Essence']),
-            "Step 3: Protect": find_best(['SPF', 'Sunscreen', 'Day Cream'])
+            "Step 1: Cleanse": find_best_unique(['Cleanser', 'Wash']),
+            "Step 2: Treat": find_best_unique(['Serum', 'Toner', 'Essence']),
+            "Step 3: Protect": find_best_unique(['SPF', 'Sunscreen', 'Day Cream'])
         },
         "PM": {
-            "Step 1: Cleanse": find_best(['Cleanser', 'Wash']),
-            "Step 2: Treat": find_best(['Serum', 'Treatment', 'Night']),
-            "Step 3: Hydrate": find_best(['Moisturizer', 'Cream'])
+            "Step 1: Cleanse": find_best_unique(['Cleanser', 'Wash']),
+            "Step 2: Treat": find_best_unique(['Serum', 'Treatment', 'Night']),
+            "Step 3: Hydrate": find_best_unique(['Moisturizer', 'Cream'])
         }
     }
-# def get_recommendations(product_df, skin_type,user_goal):
-#     target_col = f"score_{skin_type}"
-#     if target_col not in product_df.columns:
-#         target_col = "score_normal" 
-        
-#     matches = product_df[product_df[target_col] > 0.3].copy()
-#     # 2. PERSONALIZATION: Boost products matching the user's specific goal
-#     # We look for goal keywords in the ingredient list or product name
-#     goal_keywords = {
-#         "Acne Control": ["salicylic", "benzoyl", "tea tree", "zinc"],
-#         "Brightening": ["vitamin c", "niacinamide", "glycolic", "kojic"],
-#         "Anti-Aging": ["retinol", "peptides", "collagen", "adenosine"],
-#         "Deep Hydration": ["hyaluronic", "glycerin", "ceramide", "squalane"]
-#     }
-    
-#     if user_goal in goal_keywords:
-#         keywords = goal_keywords[user_goal]
-#         # Assign a 'Personalization Boost'
-#         def calculate_boost(row):
-#             ingreds = str(row['clean_ingreds']).lower()
-#             return sum(2.0 for k in keywords if k in ingreds)
-        
-#         matches['boost'] = matches.apply(calculate_boost, axis=1)
-#         matches[target_col] = matches[target_col] + matches['boost']
-
-    
-#     # 3. Sort by the NEW personalized score
-#     matches = matches.sort_values(by=target_col, ascending=False)
-    
-#     def find_best(category_keywords):
-#         pattern = '|'.join(category_keywords)
-#         return matches[matches['product_type'].str.contains(pattern, case=False, na=False)].head(1)
-
-#     routine = {
-#         "AM": {
-#             "Step 1: Cleanse": find_best(['Cleanser', 'Wash']),
-#             "Step 2: Treat": find_best(['Serum', 'Toner', 'Essence']),
-#             "Step 3: Protect": find_best(['SPF', 'Sunscreen', 'Day Cream', 'Moisturizer'])
-#         },
-#         "PM": {
-#             "Step 1: Cleanse": find_best(['Cleanser', 'Wash', 'Oil']),
-#             "Step 2: Treat": find_best(['Serum', 'Treatment', 'Night']),
-#             "Step 3: Hydrate": find_best(['Moisturizer', 'Cream', 'Night Cream'])
-#         }
-#     }
-#     return routine
 
 # -----------------------------------------------------------------
 # MAIN INTERFACE
@@ -267,6 +222,7 @@ def main():
         st.sidebar.success(f"📍 {weather_info['city']}")
         st.sidebar.metric("Temperature", f"{weather_info['temp']}°C")
         st.sidebar.metric("Humidity", f"{weather_info['humidity']}%")
+        st.sidebar.metric("UV Index", f"{weather_info['uv_index']:.1f}") 
         st.sidebar.caption(f"Current Condition: {weather_info['description'].capitalize()}")
     else:
         st.sidebar.warning("Weather data unavailable. Using standard mode.")
@@ -331,11 +287,10 @@ def main():
                 st.bar_chart(chart_data)
 
             if final_type != "uncertain":
-                routine = get_recommendations(df, final_type, user_quiz['goal'],weather_info)
+                routine = get_recommendations(df, ai_results, user_quiz,weather_info)
                 st.metric("Detected Profile", final_type.capitalize())
                 st.divider()
                 
-                routine = get_recommendations(df, final_type, user_quiz['goal'],weather_info)
                 st.subheader(f"✨ Recommended {final_type.capitalize()} Regimen")
                 
                 col_am, col_pm = st.columns(2)
